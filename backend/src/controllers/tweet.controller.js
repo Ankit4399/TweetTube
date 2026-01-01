@@ -1,9 +1,9 @@
 import asyncHandler from "../utils/asyncHandler.js";
 import ApiError from "../utils/apiError.js";
-import { Tweet } from "../models/tweet.model.js";
+import { Tweet, User, Like } from "../models/index.js";
 import ApiResponse from "../utils/ApiResponse.js";
-import mongoose, { isValidObjectId } from "mongoose";
-import { User } from "../models/user.model.js";
+import { isValidUUID } from "../utils/uuidValidator.js";
+import { Op } from "sequelize";
 
 const createTweet = asyncHandler(async (req, res) => {
     const { content } = req.body;
@@ -14,7 +14,7 @@ const createTweet = asyncHandler(async (req, res) => {
 
     const tweet = await Tweet.create({
         content,
-        owner: req.user?._id,
+        ownerId: req.user?.id,
     });
 
     if (!tweet) {
@@ -34,57 +34,46 @@ const updateTweet = asyncHandler(async (req, res) => {
         throw new ApiError(400, "content is required");
     }
 
-    if (!isValidObjectId(tweetId)) {
+    if (!isValidUUID(tweetId)) {
         throw new ApiError(400, "Invalid tweetId");
     }
 
-    const tweet = await Tweet.findById(tweetId);
+    const tweet = await Tweet.findByPk(tweetId);
 
     if (!tweet) {
         throw new ApiError(404, "Tweet not found");
     }
 
-    if (tweet?.owner.toString() !== req.user?._id.toString()) {
+    if (tweet?.ownerId !== req.user?.id) {
         throw new ApiError(400, "only owner can edit thier tweet");
     }
 
-    const newTweet = await Tweet.findByIdAndUpdate(
-        tweetId,
-        {
-            $set: {
-                content,
-            },
-        },
-        { new: true }
-    );
-
-    if (!newTweet) {
-        throw new ApiError(500, "Failed to edit tweet please try again");
-    }
+    await tweet.update({ content });
+    await tweet.reload();
 
     return res
         .status(200)
-        .json(new ApiResponse(200, newTweet, "Tweet updated successfully"));
+        .json(new ApiResponse(200, tweet, "Tweet updated successfully"));
 });
 
 const deleteTweet = asyncHandler(async (req, res) => {
     const { tweetId } = req.params;
 
-    if (!isValidObjectId(tweetId)) {
+    if (!isValidUUID(tweetId)) {
         throw new ApiError(400, "Invalid tweetId");
     }
 
-    const tweet = await Tweet.findById(tweetId);
+    const tweet = await Tweet.findByPk(tweetId);
 
     if (!tweet) {
         throw new ApiError(404, "Tweet not found");
     }
 
-    if (tweet?.owner.toString() !== req.user?._id.toString()) {
+    if (tweet?.ownerId !== req.user?.id) {
         throw new ApiError(400, "only owner can delete thier tweet");
     }
 
-    await Tweet.findByIdAndDelete(tweetId);
+    await tweet.destroy();
 
     return res
         .status(200)
@@ -94,83 +83,49 @@ const deleteTweet = asyncHandler(async (req, res) => {
 const getUserTweets = asyncHandler(async (req, res) => {
     const { userId } = req.params;
 
-    if (!isValidObjectId(userId)) {
+    if (!isValidUUID(userId)) {
         throw new ApiError(400, "Invalid userId");
     }
 
-    const tweets = await Tweet.aggregate([
-        {
-            $match: {
-                owner: new mongoose.Types.ObjectId(userId),
+    const tweets = await Tweet.findAll({
+        where: { ownerId: userId },
+        include: [
+            {
+                model: User,
+                as: 'owner',
+                attributes: ['id', 'username', 'avatar']
             },
-        },
-        {
-            $lookup: {
-                from: "users",
-                localField: "owner",
-                foreignField: "_id",
-                as: "ownerDetails",
-                pipeline: [
-                    {
-                        $project: {
-                            username: 1,
-                            "avatar.url": 1,
-                        },
-                    },
-                ],
-            },
-        },
-        {
-            $lookup: {
-                from: "likes",
-                localField: "_id",
-                foreignField: "tweet",
-                as: "likeDetails",
-                pipeline: [
-                    {
-                        $project: {
-                            likedBy: 1,
-                        },
-                    },
-                ],
-            },
-        },
-        {
-            $addFields: {
-                likesCount: {
-                    $size: "$likeDetails",
-                },
-                ownerDetails: {
-                    $first: "$ownerDetails",
-                },
-                isLiked: {
-                    $cond: {
-                        if: {$in: [req.user?._id, "$likeDetails.likedBy"]},
-                        then: true,
-                        else: false
-                    }
-                }
-            },
-        },
-        {
-            $sort: {
-                createdAt: -1
+            {
+                model: Like,
+                as: 'likes',
+                attributes: ['id', 'likedById']
             }
-        },
-        {
-            $project: {
-                content: 1,
-                ownerDetails: 1,
-                likesCount: 1,
-                createdAt: 1,
-                isLiked: 1
+        ],
+        order: [['createdAt', 'DESC']]
+    });
+
+    const formattedTweets = tweets.map(tweet => {
+        const tweetData = tweet.toJSON();
+        const likesCount = tweet.likes ? tweet.likes.length : 0;
+        const isLiked = tweet.likes?.some(like => like.likedById === req.user?.id) || false;
+        
+        return {
+            id: tweetData.id,
+            content: tweetData.content,
+            createdAt: tweetData.createdAt,
+            ownerDetails: {
+                id: tweetData.owner?.id,
+                username: tweetData.owner?.username,
+                avatar: tweetData.owner?.avatar
             },
-        },
-    ]);
+            likesCount,
+            isLiked
+        };
+    });
 
     return res
         .status(200)
-        .json(new ApiResponse(200, tweets, "Tweets fetched successfully"));
+        .json(new ApiResponse(200, formattedTweets, "Tweets fetched successfully"));
 });
 
 export { createTweet, updateTweet, deleteTweet, getUserTweets };

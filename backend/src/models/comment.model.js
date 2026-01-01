@@ -1,26 +1,43 @@
-import mongoose, {Schema} from "mongoose"
-import mongooseAggregatePaginate from "mongoose-aggregate-paginate-v2";
+import { DataTypes } from "sequelize";
+import { sequelize } from "../db/dbConnect.js";
 
-const commentSchema = new Schema(
-    {
-        content: {
-            type: String,
-            required: [true, "content is required"]
-        },
-        video: {
-            type: Schema.Types.ObjectId,
-            ref: "Video"
-        }, 
-        owner: {
-            type: Schema.Types.ObjectId,
-            ref: "User"
-        },
-    }, 
-    {
-        timestamps: true
+const Comment = sequelize.define('Comment', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    content: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+        validate: {
+            notEmpty: { msg: "content is required" }
+        }
+    },
+    videoId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        references: {
+            model: 'Videos',
+            key: 'id'
+        }
+    },
+    ownerId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        references: {
+            model: 'Users',
+            key: 'id'
+        }
     }
-);
+}, {
+    timestamps: true,
+    indexes: [
+        { fields: ['videoId'] },
+        { fields: ['ownerId'] }
+    ]
+});
 
-commentSchema.plugin(mongooseAggregatePaginate);
+// Associations will be defined in models/index.js to avoid circular dependencies
 
-export const Comment = mongoose.model("Comment", commentSchema);
+export { Comment };

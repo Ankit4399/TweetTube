@@ -1,21 +1,21 @@
 import asyncHandler from "../utils/asyncHandler.js"
 import ApiError from "../utils/apiError.js"
-import { User } from "../models/user.model.js"
+import { User, Subscription, Video, WatchHistory } from "../models/index.js"
 import {uploadOnCloudinary, deleteOnCloudinary} from "../utils/cloudinary.js"
 import ApiResponse from "../utils/ApiResponse.js"
 import JWT from "jsonwebtoken"
-import mongoose from 'mongoose'
+import { Op } from "sequelize"
 
 const generateAccessAndRefreshToken = async(userId) => {
     
     try {
-        const user = await User.findById(userId);
+        const user = await User.findByPk(userId);
         
         const accessToken = user.generateAccessToken();
         const refreshToken = user.generateRefreshToken();
 
         user.refreshToken = refreshToken;
-        await user.save({ validateBeforeSave: false });
+        await user.save();
 
         return { accessToken, refreshToken };
     } catch (error) {
@@ -43,7 +43,9 @@ const registerUser = asyncHandler( async(req, res) => {
     }
 
     const userExists = await User.findOne({
-        $or: [{ username }, { email }]
+        where: {
+            [Op.or]: [{ username }, { email }]
+        }
     })
 
     if (userExists) throw new ApiError(409, "user with username or email already exists")
@@ -81,9 +83,9 @@ const registerUser = asyncHandler( async(req, res) => {
         password
     })
 
-    const createdUser = await User.findById(user._id).select(
-        "-password -refreshToken"
-    )
+    const createdUser = await User.findByPk(user.id, {
+        attributes: { exclude: ['password', 'refreshToken'] }
+    })
 
     if (!createdUser) throw new ApiError(500, "user registration failed, please try again")
 
@@ -108,7 +110,9 @@ const loginUser = asyncHandler(async(req, res) => {
     }
 
     const user = await User.findOne({
-        $or: [{ email }, { username }]
+        where: {
+            [Op.or]: [{ email }, { username }]
+        }
     });
 
     if (!user) {
@@ -121,9 +125,11 @@ const loginUser = asyncHandler(async(req, res) => {
         throw new ApiError(401, "Invalid user credentials.");
     }
 
-    const { accessToken, refreshToken } = await generateAccessAndRefreshToken(user._id);
+    const { accessToken, refreshToken } = await generateAccessAndRefreshToken(user.id);
 
-    const loggedInUser = await User.findById(user._id).select(" -password -refreshToken");
+    const loggedInUser = await User.findByPk(user.id, {
+        attributes: { exclude: ['password', 'refreshToken'] }
+    });
 
     const options = {
         httpOnly: true,
@@ -148,14 +154,9 @@ const loginUser = asyncHandler(async(req, res) => {
 });
 
 const logoutUser = asyncHandler(async(req, res) => {
-    await User.findByIdAndUpdate(
-        req.user._id,
-        {
-            $unset: {
-                refreshToken: 1 // removes field from document
-            }
-        },
-        { new: true }
+    await User.update(
+        { refreshToken: null },
+        { where: { id: req.user.id } }
     );
 
     const options = {
@@ -192,7 +193,7 @@ const refreshAccessToken = asyncHandler(async(req, res) => {
         throw new ApiError(401, "Invalid refresh token");
     }
 
-    const { accessToken , refreshToken } = await generateAccessAndRefreshToken(user._id);
+    const { accessToken , refreshToken } = await generateAccessAndRefreshToken(user.id);
 
     const options = {
         httpOnly: true,
@@ -220,7 +221,7 @@ const refreshAccessToken = asyncHandler(async(req, res) => {
 const changeCurrentPassword = asyncHandler(async(req, res) => {
     const { oldPassword, newPassword } = req.body;
 
-    const user = await User.findById(req.user?._id);
+    const user = await User.findByPk(req.user?.id);
 
     const isOldPasswordCorrect = await user.comparePassword(oldPassword);
 
@@ -229,7 +230,7 @@ const changeCurrentPassword = asyncHandler(async(req, res) => {
     }
 
     user.password = newPassword;
-    await user.save({ validateBeforeSave: false });
+    await user.save();
 
     return res
         .status(200)
@@ -253,16 +254,14 @@ const updateUserDetails = asyncHandler(async(req, res) => {
         throw new ApiError(400, "All fields are required");
     }
 
-    const user = await User.findByIdAndUpdate(
-        req.user?._id,
-        {
-            $set: {
-                fullName,
-                email
-            }
-        },
-        { new: true }
-    ).select("-password -refreshToken");
+    await User.update(
+        { fullName, email },
+        { where: { id: req.user?.id } }
+    );
+    
+    const user = await User.findByPk(req.user?.id, {
+        attributes: { exclude: ['password', 'refreshToken'] }
+    });
 
     return res
         .status(200)
@@ -284,22 +283,25 @@ const updateUserAvatar = asyncHandler(async(req, res) => {
         throw new ApiError(400, "Error while uploading avatar");
     }
 
-    const user = await User.findById(req.user._id).select("avatar");
+    const user = await User.findByPk(req.user.id, {
+        attributes: ['id', 'avatar']
+    });
 
     const avatarToDelete = user.avatar.public_id;
 
-    const updatedUser = await User.findByIdAndUpdate(
-        req.user?._id,
+    await User.update(
         {
-            $set: {
-                avatar: {
-                    public_id: avatar.public_id,
-                    url: avatar.secure_url
-                }
+            avatar: {
+                public_id: avatar.public_id,
+                url: avatar.secure_url
             }
         },
-        { new: true }
-    ).select("-password");
+        { where: { id: req.user?.id } }
+    );
+    
+    const updatedUser = await User.findByPk(req.user?.id, {
+        attributes: { exclude: ['password'] }
+    });
 
     if (avatarToDelete && updatedUser.avatar.public_id) {
         await deleteOnCloudinary(avatarToDelete);
@@ -325,22 +327,25 @@ const updateUserCoverImage = asyncHandler(async(req, res) => {
         throw new ApiError(400, "Error while uploading coverImage");
     }
 
-    const user = await User.findById(req.user._id).select("coverImage");
+    const user = await User.findByPk(req.user.id, {
+        attributes: ['id', 'coverImage']
+    });
 
     const coverImageToDelete = user.coverImage.public_id;
 
-    const updatedUser = await User.findByIdAndUpdate(
-        req.user?._id,
+    await User.update(
         {
-            $set: {
-                coverImage: {
-                    public_id: coverImage.public_id,
-                    url: coverImage.secure_url
-                }
+            coverImage: {
+                public_id: coverImage.public_id,
+                url: coverImage.secure_url
             }
         },
-        { new: true }
-    ).select("-password");
+        { where: { id: req.user?.id } }
+    );
+    
+    const updatedUser = await User.findByPk(req.user?.id, {
+        attributes: { exclude: ['password'] }
+    });
 
     if (coverImageToDelete && updatedUser.coverImage.public_id) {
         await deleteOnCloudinary(coverImageToDelete);
@@ -360,124 +365,100 @@ const getUserChannelProfile = asyncHandler(async(req, res) => {
         throw new ApiError(400, "username is missing");
     }
 
-    const channel = await User.aggregate([
-        {
-            $match: {
-                username: username?.toLowerCase()
-            }
-        },
-        {
-            $lookup: {
-                from: "subscriptions", // The collection to join with
-                localField: "_id", // Field from the current collection (User) to match
-                foreignField: "channel", // Field from the 'subscriptions' collection to match
-                as: "subscribers" // Alias for the joined data
-            }
-        },
-        {
-            $lookup: {
-                from: "subscriptions",
-                localField: "_id",
-                foreignField: "subscriber",
-                as: "subscribedTo"
-            }
-        },
-        {
-            $addFields: {
-                subcribersCount: {
-                    $size: "$subscribers"
-                },
-                channelsSubscribedToCount: {
-                    $size: "$subscribedTo"
-                },
-                isSubscribed: {
-                    $cond: {
-                        if: {$in: [req.user?._id, "$subscribers.subscriber"]},
-                        then: true,
-                        else: false
-                    }
-                }
-            }
-        },
-        {
-            $project: {
-                fullName: 1,
-                username: 1,
-                email: 1,
-                avatar: 1,
-                coverImage: 1,
-                subcribersCount: 1,
-                channelsSubscribedToCount: 1,
-                isSubscribed: 1
-            }
-        }
-    ]);
+    const channel = await User.findOne({
+        where: { username: username?.toLowerCase() },
+        attributes: ['id', 'fullName', 'username', 'email', 'avatar', 'coverImage']
+    });
 
-    // console.log(channel);
-    if (!channel?.length) {
+    if (!channel) {
         throw new ApiError(404, "channel doesnot exist");
     }
+
+    const subscribersCount = await Subscription.count({
+        where: { channelId: channel.id }
+    });
+
+    const channelsSubscribedToCount = await Subscription.count({
+        where: { subscriberId: channel.id }
+    });
+
+    const isSubscribed = req.user?.id ? await Subscription.findOne({
+        where: {
+            channelId: channel.id,
+            subscriberId: req.user.id
+        }
+    }) : null;
+
+    const channelData = channel.toJSON();
+    const formattedChannel = {
+        ...channelData,
+        subcribersCount: subscribersCount,
+        channelsSubscribedToCount,
+        isSubscribed: !!isSubscribed
+    };
 
     return res
         .status(200)
         .json(
             new ApiResponse(
                 200,
-                channel[0],
+                formattedChannel,
                 "User channel fetced successfully"
             )
         )
 });
 
 const getWatchHistory = asyncHandler(async(req, res) => {
-    const user = await User.aggregate([
-        {
-            $match: {
-                _id: new mongoose.Types.ObjectId(req.user._id)
-            }
-        },
-        {
-            $lookup: {
-                from: "videos",
-                localField: "watchHistory",
-                foreignField: "_id",
-                as: "watchHistory",
-                pipeline: [
+    const user = await User.findByPk(req.user.id, {
+        include: [
+            {
+                model: Video,
+                as: 'watchHistory',
+                include: [
                     {
-                        $lookup: {
-                            from: "users",
-                            localField: "owner",
-                            foreignField: "_id",
-                            as: "owner",
-                            pipeline: [
-                                {
-                                    $project: {
-                                        username: 1,
-                                        fullName: 1,
-                                        avatar: 1
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    {
-                        $addFields: {
-                            owner: {
-                                $first: "$owner"
-                            }
-                        }
+                        model: User,
+                        as: 'owner',
+                        attributes: ['id', 'username', 'fullName', 'avatar']
                     }
-                ]
+                ],
+                through: {
+                    attributes: ['createdAt']
+                }
             }
-        }
-    ]);
+        ]
+    });
+
+    if (!user) {
+        throw new ApiError(404, "User not found");
+    }
+
+    const videos = user.watchHistory || [];
+    const formattedHistory = videos.map(video => {
+        const videoData = video.toJSON();
+        return {
+            id: videoData.id,
+            videoFile: videoData.videoFile,
+            thumbnail: videoData.thumbnail,
+            title: videoData.title,
+            description: videoData.description,
+            duration: videoData.duration,
+            views: videoData.views,
+            createdAt: videoData.WatchHistory?.createdAt || videoData.createdAt,
+            owner: {
+                id: videoData.owner?.id,
+                username: videoData.owner?.username,
+                fullName: videoData.owner?.fullName,
+                avatar: videoData.owner?.avatar
+            }
+        };
+    }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     return res
         .status(200)
         .json(
             new ApiResponse(
                 200,
-                user[0].watchHistory,
+                formattedHistory,
                 "Watch history fetched successfully"
             )
         )

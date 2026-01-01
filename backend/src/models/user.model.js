@@ -1,98 +1,125 @@
-import {Schema, model} from "mongoose";
-import jwt from "jsonwebtoken"
-import bcrypt from "bcrypt"
+import { DataTypes } from "sequelize";
+import { sequelize } from "../db/dbConnect.js";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 
-const userSchema = new Schema(
-    {
-        username: {
-            type: String,
-            required: [true, 'username is required'],
-            unique: true,
-            lowercase: true,
-            trim: true,
-            index: true
+const User = sequelize.define('User', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    username: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+        validate: {
+            notEmpty: { msg: 'username is required' }
         },
-        email: {
-            type: String,
-            required: [true, 'email is required'],
-            unique: true,
-            lowercase: true,
-            trim: true,
-        },
-        fullName: {
-            type: String,
-            required: [true, 'fullname is required'],
-            trim: true,
-            index: true
-        },
-        avatar: {
-            type: {
-                public_id: String,
-                url: String //cloudinary url
-            },
-            required: true
-        },
-        coverImage: {
-            type: {
-                public_id: String,
-                url: String //cloudinary url
-            },
-        },
-        watchHistory: [
-            {
-                type: Schema.Types.ObjectId,
-                ref: "Video"
-            }
-        ],
-        password: {
-            type: String,
-            required: [true, 'Password is required']
-        },
-        refreshToken: {
-            type: String
+        set(value) {
+            this.setDataValue('username', value?.toLowerCase()?.trim());
         }
     },
-    {
-        timestamps: true
+    email: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true,
+        validate: {
+            isEmail: true,
+            notEmpty: { msg: 'email is required' }
+        },
+        set(value) {
+            this.setDataValue('email', value?.toLowerCase()?.trim());
+        }
+    },
+    fullName: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notEmpty: { msg: 'fullname is required' }
+        },
+        set(value) {
+            this.setDataValue('fullName', value?.trim());
+        }
+    },
+    avatar: {
+        type: DataTypes.JSONB,
+        allowNull: false,
+        defaultValue: {},
+        validate: {
+            notEmpty: { msg: 'avatar is required' }
+        }
+    },
+    coverImage: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        defaultValue: null
+    },
+    password: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            notEmpty: { msg: 'Password is required' }
+        }
+    },
+    refreshToken: {
+        type: DataTypes.STRING,
+        allowNull: true
     }
-)
+}, {
+    timestamps: true,
+    indexes: [
+        { fields: ['username'] },
+        { fields: ['fullName'] }
+    ]
+});
 
-userSchema.pre("save", async function(next){
-    if (!this.isModified('password')) return next()
+// Hash password before saving
+User.beforeCreate(async (user) => {
+    if (user.password) {
+        user.password = await bcrypt.hash(user.password, 10);
+    }
+});
 
-    this.password = await bcrypt.hash(this.password, 10)
-    return next()
-})
+User.beforeUpdate(async (user) => {
+    if (user.changed('password')) {
+        user.password = await bcrypt.hash(user.password, 10);
+    }
+});
 
-userSchema.methods = {
-    comparePassword: async function(plainTextPassword) {
-        return await bcrypt.compare(plainTextPassword, this.password)
-    },
-    generateAccessToken: function(){
-        return jwt.sign(
-            {
-                _id: this._id,
-                email: this.email,
-                username: this.username,
-                fullName: this.fullName
-            },
-            process.env.ACCESS_TOKEN_SECRET,
-            {
-                expiresIn: process.env.ACCESS_TOKEN_EXPIRY
-            }
-        )
-    },
-    generateRefreshToken: function(){
-        return jwt.sign(
-            {
-                _id: this._id,
-            },
-            process.env.REFRESH_TOKEN_SECRET,
-            {
-                expiresIn: process.env.REFRESH_TOKEN_EXPIRY
-            }
-        )
-    },
-}
+// Instance methods
+User.prototype.comparePassword = async function(plainTextPassword) {
+    return await bcrypt.compare(plainTextPassword, this.password);
+};
 
-export const User = model('User', userSchema)
+User.prototype.generateAccessToken = function() {
+    return jwt.sign(
+        {
+            id: this.id,
+            email: this.email,
+            username: this.username,
+            fullName: this.fullName
+        },
+        process.env.ACCESS_TOKEN_SECRET,
+        {
+            expiresIn: process.env.ACCESS_TOKEN_EXPIRY
+        }
+    );
+};
+
+User.prototype.generateRefreshToken = function() {
+    return jwt.sign(
+        {
+            id: this.id,
+        },
+        process.env.REFRESH_TOKEN_SECRET,
+        {
+            expiresIn: process.env.REFRESH_TOKEN_EXPIRY
+        }
+    );
+};
+
+// WatchHistory will be defined after Video model is imported to avoid circular dependency
+// See video.model.js for the association
+
+export { User };

@@ -1,19 +1,34 @@
-import mongoose, {Schema} from "mongoose"
+import { DataTypes } from "sequelize";
+import { sequelize } from "../db/dbConnect.js";
 
-const tweetSchema = new Schema(
-    {
-        content: {
-            type: String,
-            required: [true, "content is required"]
-        },
-        owner: {
-            type: Schema.Types.ObjectId,
-            ref: "User"
+const Tweet = sequelize.define('Tweet', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    content: {
+        type: DataTypes.TEXT,
+        allowNull: false,
+        validate: {
+            notEmpty: { msg: "content is required" }
         }
     },
-    { 
-        timestamps: true
+    ownerId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        references: {
+            model: 'Users',
+            key: 'id'
+        }
     }
-);
+}, {
+    timestamps: true,
+    indexes: [
+        { fields: ['ownerId'] }
+    ]
+});
 
-export const Tweet = mongoose.model("Tweet", tweetSchema);
+// Associations will be defined in models/index.js to avoid circular dependencies
+
+export { Tweet };

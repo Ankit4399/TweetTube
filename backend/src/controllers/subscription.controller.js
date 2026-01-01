@@ -1,39 +1,40 @@
-import mongoose, { isValidObjectId } from "mongoose";
+import { Subscription, User, Video } from "../models/index.js";
 import asyncHandler from "../utils/asyncHandler.js";
 import ApiError from "../utils/apiError.js";
 import ApiResponse from "../utils/ApiResponse.js";
-import { Subscription } from "../models/subscription.model.js";
+import { isValidUUID } from "../utils/uuidValidator.js";
+import { Op } from "sequelize";
 
 const toggleSubscription = asyncHandler(async (req, res) => {
     const { channelId } = req.params;
-    // TODO: toggle subscription
 
-    if (!isValidObjectId(channelId)) {
+    if (!isValidUUID(channelId)) {
         throw new ApiError(400, "Invalid channelId");
     }
 
     const isSubscribed = await Subscription.findOne({
-        subscriber: req.user?._id,
-        channel: channelId,
+        where: {
+            subscriberId: req.user?.id,
+            channelId: channelId,
+        }
     });
 
     if (isSubscribed) {
-        await Subscription.findByIdAndDelete(isSubscribed?._id);
-
+        await isSubscribed.destroy();
         return res
             .status(200)
             .json(
                 new ApiResponse(
                     200,
                     { subscribed: false },
-                    "unsunscribed successfully"
+                    "unsubscribed successfully"
                 )
             );
     }
 
     await Subscription.create({
-        subscriber: req.user?._id,
-        channel: channelId,
+        subscriberId: req.user?.id,
+        channelId: channelId,
     });
 
     return res
@@ -49,81 +50,65 @@ const toggleSubscription = asyncHandler(async (req, res) => {
 
 // controller to return subscriber list of a channel
 const getUserChannelSubscribers = asyncHandler(async (req, res) => {
-    let { channelId } = req.params;
+    const { channelId } = req.params;
 
-    if (!isValidObjectId(channelId)) {
+    if (!isValidUUID(channelId)) {
         throw new ApiError(400, "Invalid channelId");
     }
 
-    channelId = new mongoose.Types.ObjectId(channelId);
+    const subscriptions = await Subscription.findAll({
+        where: { channelId },
+        include: [
+            {
+                model: User,
+                as: 'subscriber',
+                attributes: ['id', 'username', 'fullName', 'avatar'],
+                include: [
+                    {
+                        model: Subscription,
+                        as: 'subscribers',
+                        attributes: ['id', 'subscriberId']
+                    }
+                ]
+            }
+        ]
+    });
 
-    const subscribers = await Subscription.aggregate([
-        {
-            $match: {
-                channel: channelId,
-            },
-        },
-        {
-            $lookup: {
-                from: "users",
-                localField: "subscriber",
-                foreignField: "_id",
-                as: "subscriber",
-                pipeline: [
-                    {
-                        $lookup: {
-                            from: "subscriptions",
-                            localField: "_id",
-                            foreignField: "channel",
-                            as: "subscribedToSubscriber",
-                        },
-                    },
-                    {
-                        $addFields: {
-                            subscribedToSubscriber: {
-                                $cond: {
-                                    if: {
-                                        $in: [
-                                            channelId,
-                                            "$subscribedToSubscriber.subscriber",
-                                        ],
-                                    },
-                                    then: true,
-                                    else: false,
-                                },
-                            },
-                            subscribersCount: {
-                                $size: "$subscribedToSubscriber",
-                            },
-                        },
-                    },
-                ],
-            },
-        },
-        {
-            $unwind: "$subscriber",
-        },
-        {
-            $project: {
-                _id: 0,
-                subscriber: {
-                    _id: 1,
-                    username: 1,
-                    fullName: 1,
-                    "avatar.url": 1,
-                    subscribedToSubscriber: 1,
-                    subscribersCount: 1,
-                },
-            },
-        },
-    ]);
+    const formattedSubscribers = await Promise.all(subscriptions.map(async (sub) => {
+        const subData = sub.toJSON();
+        const subscriber = subData.subscriber;
+        
+        // Check if current user is subscribed to this subscriber
+        const subscribedToSubscriber = req.user?.id ? await Subscription.findOne({
+            where: {
+                channelId: subscriber?.id,
+                subscriberId: channelId
+            }
+        }) : null;
+
+        // Get subscriber count
+        const subscribersCount = await Subscription.count({
+            where: { channelId: subscriber?.id }
+        });
+
+        return {
+            subscriber: {
+                id: subscriber?.id,
+                username: subscriber?.username,
+                fullName: subscriber?.fullName,
+                avatar: subscriber?.avatar,
+                subscribedToSubscriber: !!subscribedToSubscriber,
+                subscribersCount
+            }
+        };
+    }));
 
     return res
         .status(200)
         .json(
             new ApiResponse(
                 200,
-                subscribers,
+                formattedSubscribers,
                 "subscribers fetched successfully"
             )
         );
@@ -133,70 +118,65 @@ const getUserChannelSubscribers = asyncHandler(async (req, res) => {
 const getSubscribedChannels = asyncHandler(async (req, res) => {
     const { subscriberId } = req.params;
 
-    const subscribedChannels = await Subscription.aggregate([
-        {
-            $match: {
-                subscriber: new mongoose.Types.ObjectId(subscriberId),
-            },
-        },
-        {
-            $lookup: {
-                from: "users",
-                localField: "channel",
-                foreignField: "_id",
-                as: "subscribedChannel",
-                pipeline: [
+    if (!isValidUUID(subscriberId)) {
+        throw new ApiError(400, "Invalid subscriberId");
+    }
+
+    const subscriptions = await Subscription.findAll({
+        where: { subscriberId },
+        include: [
+            {
+                model: User,
+                as: 'channel',
+                attributes: ['id', 'username', 'fullName', 'avatar'],
+                include: [
                     {
-                        $lookup: {
-                            from: "videos",
-                            localField: "_id",
-                            foreignField: "owner",
-                            as: "videos",
-                        },
-                    },
-                    {
-                        $addFields: {
-                            latestVideo: {
-                                $last: "$videos",
-                            },
-                        },
-                    },
-                ],
-            },
-        },
-        {
-            $unwind: "$subscribedChannel",
-        },
-        {
-            $project: {
-                _id: 0,
-                subscribedChannel: {
-                    _id: 1,
-                    username: 1,
-                    fullName: 1,
-                    "avatar.url": 1,
-                    latestVideo: {
-                        _id: 1,
-                        "videoFile.url": 1,
-                        "thumbnail.url": 1,
-                        owner: 1,
-                        title: 1,
-                        description: 1,
-                        duration: 1,
-                        createdAt: 1,
-                        views: 1
-                    },
-                },
-            },
-        },
-    ]);
+                        model: Video,
+                        as: 'videos',
+                        attributes: ['id', 'videoFile', 'thumbnail', 'ownerId', 'title', 'description', 'duration', 'createdAt', 'views'],
+                        where: { isPublished: true },
+                        required: false,
+                        separate: true,
+                        order: [['createdAt', 'DESC']],
+                        limit: 1
+                    }
+                ]
+            }
+        ]
+    });
+
+    const formattedChannels = subscriptions.map(sub => {
+        const subData = sub.toJSON();
+        const channel = subData.channel;
+        const latestVideo = channel?.videos?.[0] || null;
+
+        return {
+            subscribedChannel: {
+                id: channel?.id,
+                username: channel?.username,
+                fullName: channel?.fullName,
+                avatar: channel?.avatar,
+                latestVideo: latestVideo ? {
+                    id: latestVideo.id,
+                    videoFile: latestVideo.videoFile,
+                    thumbnail: latestVideo.thumbnail,
+                    ownerId: latestVideo.ownerId,
+                    title: latestVideo.title,
+                    description: latestVideo.description,
+                    duration: latestVideo.duration,
+                    createdAt: latestVideo.createdAt,
+                    views: latestVideo.views
+                } : null
+            }
+        };
+    });
 
     return res
         .status(200)
         .json(
             new ApiResponse(
                 200,
-                subscribedChannels,
+                formattedChannels,
                 "subscribed channels fetched successfully"
             )
         );

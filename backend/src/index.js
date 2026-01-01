@@ -6,11 +6,20 @@ dotenv.config() // load .env from project root (or set path: './.env' if needed)
 
 connectToDB()
 .then(() => {
-    app.listen(process.env.PORT || 8000, () => {
-        console.log(`Server is listening on: ${process.env.PORT}`);
+    const port = process.env.PORT || 8000;
+    app.listen(port, () => {
+        console.log(`\n✅ Server is running on port ${port}`);
+        console.log(`📍 API Base URL: http://localhost:${port}/api/v1\n`);
     })
 })
-.catch((error) => console.log("MONGODB connection failed!!!: ", error))
+.catch((error) => {
+    console.log("❌ PostgreSQL connection failed!!!: ", error);
+    console.log("\n💡 Make sure:");
+    console.log("   1. PostgreSQL is running");
+    console.log("   2. .env file exists with correct database credentials");
+    console.log("   3. Database 'tweettube' exists\n");
+    process.exit(1);
+})
 
 
 
@@ -26,24 +35,3 @@ connectToDB()
 
 
 
-
-/**import express from 'express'
-const app = express()
-
-( async() => {
-    try {
-        await mongoose.connect(`${process.env.MONGODB_URL}/${DB_NAME}`)
-        app.on("error", (error) => {
-            console.log("Error", error);
-            throw error
-        })
-
-        app.listen(process.env.PORT, () => {
-            console.log(`App is listening on port ${process.env.PORT}`);
-        })
-    } catch (error) {
-        console.log("Error", error);
-        throw error
-    }
-})()
-**/
