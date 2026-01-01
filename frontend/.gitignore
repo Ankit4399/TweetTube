@@ -25,3 +25,6 @@ dist-ssr
 .env
 
 .vercel
+
+QUICK_FIX.md
+FRONTEND_FIX.md
